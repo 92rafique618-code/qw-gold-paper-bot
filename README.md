@@ -1,0 +1,1 @@
+# qw-gold-paper-bot
