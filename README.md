@@ -1,34 +1,20 @@
-# QW Gold Paper Bot v1.0
+# QW Gold Paper Bot v1.1
 
-Mobile-friendly Streamlit dashboard and Python automatic paper simulator for Yahoo Finance `XAUUSD=X` gold spot quote.
+PAPER ONLY. No broker connection, live orders, deposits, or withdrawals.
 
-## Important
-- PAPER ONLY: no broker connection, API keys, real orders, deposits or withdrawals.
-- Yahoo Finance `XAUUSD=X` data availability and delays may vary; it is not a guaranteed executable broker quote.
-- Strategy uses completed 1-hour candles and a completed 4-hour trend filter.
-- Strategy is experimental, not proven profitable.
-- Simulated slippage/fees are illustrative, not actual broker CFD spreads, swaps or commissions.
-- If stop and target are both touched in one hourly candle, simulation assumes stop first.
-- Dashboard cycles only while active/refreshing; Streamlit hosting can sleep. It is not guaranteed 24/7.
-- A phone browser alone cannot keep a Python bot running continuously.
+## Data feeds
+- Current indicative XAU/USD spot quote: XAUS `https://xaus.com/api/v1/spot?compact=1` (no API key; cache/update behavior and freshness are shown in the response).
+- Historical 1H candles used by the strategy: legacy Yahoo Finance `XAUUSD=X` fallback. This source may return no data. If it does, the strategy remains PAUSED and does not create simulated entries.
 
-## Strategy and limits
-4H EMA50/EMA200 trend filter; 1H EMA20 crossover; RSI14 filter (50–70 long, 30–50 short); stop = 2 x ATR14; target = 2R.
-$500 virtual balance; $2.50 planned risk/trade; $5 daily realized-loss pause; $25 drawdown pause; $500 simulated notional cap (1x); one position at a time; no martingale.
+The XAUS spot quote is an indicative mid-market spot price, not a broker bid/ask or executable price. A live quote alone is not enough to calculate the existing strategy's 1H EMA20/RSI/ATR and 4H EMA50/EMA200 filters. Do not bypass the history guard or invent candles.
 
-## Run on a computer
-1. Install Python 3.10+.
-2. Extract the ZIP and open a terminal in the folder.
-3. `python -m pip install -r requirements.txt`
-4. Automatic engine: `python main.py`
-5. In another terminal: `streamlit run dashboard.py`
-6. Open the Streamlit network URL on your phone using the same Wi-Fi.
+## Existing paper risk settings
+- Starting virtual balance: $500
+- Risk per trade: $2.50
+- Daily realized loss pause: $5
+- Maximum drawdown pause: $25
+- Simulated notional cap: $500 (1x)
+- Stop: 2 x ATR(14), target: 2R
 
-For online dashboard hosting, deploy `dashboard.py` from GitHub to Streamlit Community Cloud. It may sleep after inactivity and is not a continuous bot host. For continuous operation, use an always-on computer/server and persistent storage. Do not expose an unauthenticated dashboard publicly.
-
-## Files
-- bot.py: data, indicators, strategy and simulated ledger
-- dashboard.py: mobile dashboard
-- main.py: continuous polling loop
-- requirements.txt: dependencies
-- paper_state.json and trades.csv: generated during use
+## Deploy
+Streamlit Community Cloud main file: `dashboard.py`.

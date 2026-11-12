@@ -3,31 +3,42 @@ from bot import load_state, run_cycle, reset_account, trades_frame, START
 
 st.set_page_config(page_title="QW Gold Paper Bot", page_icon="🥇", layout="wide")
 st.title("🥇 QW Gold Paper Trading")
-st.caption("XAU/USD • Automatic strategy • $500 virtual balance • PAPER ONLY")
-st.warning("No broker connection or real orders. Yahoo Finance data availability and delays may vary.")
+st.caption("XAU/USD spot • $500 virtual balance • PAPER ONLY")
+st.warning("Indicative XAU/USD spot quote from XAUS; not a broker bid/ask or executable price. No broker connection or real orders.")
 
 @st.fragment(run_every="60s")
 def live_panel():
+    error = None
     try:
-        s=run_cycle()
-        st.success("Bot checked. Signals use completed 1-hour candles only.")
+        s = run_cycle()
     except Exception as e:
-        s=load_state()
-        st.error(f"Data/bot error: {e}")
+        error = str(e)
+        s = load_state()
+    if s.get("last_price"):
+        status = s.get("spot_feed", "XAUS")
+        age = s.get("spot_age_seconds")
+        age_text = f" • quote age {age}s" if age is not None else ""
+        st.success(f"Spot feed: {status}{age_text}")
+    else:
+        st.error("Spot feed not connected yet.")
+    if error:
+        st.error(error)
+        st.info("The live spot quote and the strategy's historical 1H/4H candles are separate feeds. The strategy is paused unless its required candle history is available.")
     a,b,c=st.columns(3)
     a.metric("Virtual balance",f"${s.get('balance',START):,.2f}")
     b.metric("Equity",f"${s.get('equity',START):,.2f}")
-    c.metric("Latest gold quote",f"${s['last_price']:,.2f}" if s.get("last_price") else "Waiting")
+    c.metric("Latest XAU/USD spot",f"${s['last_price']:,.2f}" if s.get("last_price") else "Waiting")
     d,e,f=st.columns(3)
     d.metric("Today's realized P&L",f"${s.get('daily_realized',0):,.2f}")
-    e.metric("Last signal",s.get("last_signal","Waiting"))
+    e.metric("Strategy status", "PAUSED" if error else s.get("last_signal","Waiting"))
     f.metric("Mode","PAPER ONLY")
+    st.caption("Spot price timestamp (UTC): "+str(s.get("spot_as_of") or "Not available"))
+    st.caption("Dashboard check (UTC): "+str(s.get("last_update") or "Not started"))
     st.subheader("Open simulated position")
     if s.get("position"):
         st.json(s["position"])
     else:
         st.info("No open simulated position.")
-    st.caption("Last update UTC: "+str(s.get("last_update") or "Not started"))
     st.subheader("Closed paper trades")
     trades=trades_frame()
     if trades.empty: st.write("No closed trades yet.")
@@ -46,4 +57,4 @@ with st.sidebar:
         reset_account()
         st.success("Reset to $500.")
         st.rerun()
-    st.caption("Prototype only. Not for live trading.")
+    st.caption("Prototype only. Never use as a live trading signal.")

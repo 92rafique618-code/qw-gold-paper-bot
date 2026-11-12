@@ -1,6 +1,7 @@
-import json, time
+import json
 from pathlib import Path
 from datetime import datetime, timezone
+import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -8,7 +9,8 @@ import yfinance as yf
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "paper_state.json"
 TRADES = ROOT / "trades.csv"
-SYMBOL = "XAUUSD=X"
+SPOT_URL = "https://xaus.com/api/v1/spot?compact=1"
+YAHOO_HISTORY_SYMBOL = "XAUUSD=X"  # historical candle fallback only; may be unavailable
 START = 500.0
 RISK = 2.50
 DAILY_STOP = 5.0
@@ -17,36 +19,75 @@ MAX_NOTIONAL = 500.0
 SLIPPAGE_BPS = 5
 FEE_BPS = 2
 
+
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
+
 
 def initial_state():
     return {"balance": START, "equity": START, "peak_equity": START,
             "day": datetime.now(timezone.utc).date().isoformat(),
             "daily_realized": 0.0, "position": None, "last_processed_bar": None,
             "last_price": None, "last_signal": "Waiting for market data",
-            "last_update": None, "mode": "PAPER ONLY"}
+            "last_update": None, "spot_feed": "Not connected", "spot_as_of": None,
+            "spot_age_seconds": None, "mode": "PAPER ONLY"}
+
 
 def load_state():
     if STATE.exists():
-        try: return json.loads(STATE.read_text())
-        except Exception: pass
-    s = initial_state(); save_state(s); return s
+        try:
+            return json.loads(STATE.read_text())
+        except Exception:
+            pass
+    s = initial_state()
+    save_state(s)
+    return s
+
 
 def save_state(s):
     STATE.write_text(json.dumps(s, indent=2))
 
+
+def fetch_spot():
+    """Fetch indicative XAU/USD spot in USD per troy ounce from XAUS."""
+    response = requests.get(SPOT_URL, timeout=15, headers={"User-Agent": "QW-Gold-Paper-Bot/1.1"})
+    response.raise_for_status()
+    data = response.json()
+    state = data.get("data_state", {})
+    if state.get("status") not in ("fresh", "stale"):
+        raise RuntimeError("XAUS reports spot data unavailable.")
+    price = data.get("spot_usd_oz")
+    if price is None:
+        price = (data.get("xau") or {}).get("price")
+    if price is None or float(price) <= 0:
+        raise RuntimeError("XAUS response did not contain a valid XAU/USD price.")
+    return {
+        "price": float(price),
+        "status": state.get("status", "unknown"),
+        "as_of": state.get("as_of") or data.get("updated_at"),
+        "age_seconds": state.get("age_seconds"),
+        "source": state.get("source", "XAUS")
+    }
+
+
 def fetch_hourly():
-    df = yf.Ticker(SYMBOL).history(period="730d", interval="1h", auto_adjust=False)
+    """Historical 1H candles for the strategy. Not supplied by the spot quote endpoint."""
+    df = yf.Ticker(YAHOO_HISTORY_SYMBOL).history(period="730d", interval="1h", auto_adjust=False)
     if df is None or df.empty:
-        raise RuntimeError("No Yahoo Finance XAUUSD=X hourly data returned.")
+        raise RuntimeError(
+            "Spot quote is connected, but Yahoo did not return historical 1H candles. "
+            "Strategy is paused; do not trade until a verified XAU/USD 1H+4H history source is configured."
+        )
     df = df.rename(columns=str.title).dropna(subset=["Close"])
-    if df.index.tz is None: df.index = df.index.tz_localize("UTC")
-    else: df.index = df.index.tz_convert("UTC")
-    # Only completed hourly candles.
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    else:
+        df.index = df.index.tz_convert("UTC")
     df = df[df.index < pd.Timestamp.now(tz="UTC").floor("h")]
-    if len(df) < 250: raise RuntimeError(f"Insufficient hourly history: {len(df)} bars.")
+    if len(df) < 250:
+        raise RuntimeError(f"Spot quote is connected, but historical strategy data is insufficient ({len(df)} hourly bars). Strategy remains paused.")
     return df
+
 
 def indicators(df):
     x = df.copy()
@@ -68,9 +109,11 @@ def indicators(df):
     x["H4_EMA50"], x["H4_EMA200"] = mapped["EMA50"], mapped["EMA200"]
     return x
 
+
 def log_trade(row):
     pd.DataFrame([row]).to_csv(TRADES, mode="a" if TRADES.exists() else "w",
                                header=not TRADES.exists(), index=False)
+
 
 def close_position(s, price, reason, bar_time):
     p = s["position"]
@@ -87,21 +130,34 @@ def close_position(s, price, reason, bar_time):
       "estimated_fees":round(fees,2),"net_pnl":round(net,2),"reason":reason})
     s["position"] = None
 
+
 def run_cycle():
     s = load_state()
     day = datetime.now(timezone.utc).date().isoformat()
     if s.get("day") != day:
         s["day"], s["daily_realized"] = day, 0.0
+
+    # Always refresh and persist the actual spot quote independently of candle history.
+    spot = fetch_spot()
+    s["last_price"] = round(spot["price"], 4)
+    s["spot_feed"] = f"XAUS ({spot['status']})"
+    s["spot_as_of"] = spot["as_of"]
+    s["spot_age_seconds"] = spot["age_seconds"]
+    s["last_update"] = utcnow()
+    save_state(s)
+
+    # No strategy decision is permitted unless the historical candle set is available.
     raw = fetch_hourly()
     x = indicators(raw).dropna(subset=["EMA20","RSI14","ATR14","H4_EMA50","H4_EMA200"])
-    if len(x) < 3: raise RuntimeError("Not enough indicator history.")
+    if len(x) < 3:
+        raise RuntimeError("Spot quote is connected, but not enough completed 1H/4H indicator history is available. Strategy remains paused.")
     b, prev = x.iloc[-1], x.iloc[-2]
     t = x.index[-1].isoformat()
     price = float(b["Close"])
-    s["last_price"], s["last_update"] = round(price,4), utcnow()
     if s.get("last_processed_bar") == t:
         s["last_signal"] = "Waiting for next completed 1H candle"
-        save_state(s); return s
+        save_state(s)
+        return s
 
     p = s.get("position")
     if p:
@@ -151,10 +207,12 @@ def run_cycle():
     save_state(s)
     return s
 
+
 def reset_account():
     if STATE.exists(): STATE.unlink()
     if TRADES.exists(): TRADES.unlink()
     return load_state()
+
 
 def trades_frame():
     return pd.read_csv(TRADES) if TRADES.exists() else pd.DataFrame()
